@@ -1,0 +1,201 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then return end
+local Camera = workspace.CurrentCamera
+
+-- CONFIGURAÇÕES AVANÇADAS DO CAMLOCK & ANTI-SIDE DASH
+local CONFIG = {
+    MaxDistance = 500,               -- Alcance máximo do lock (Studs)
+    TargetPart = "HumanoidRootPart", -- Parte principal do alvo
+    BasePrediction = 0.138,          -- Predição base de movimento
+    
+    -- ANTI-SIDE DASH
+    DashSensitivityThreshold = 18,   -- Velocidade lateral para detectar dash
+    DashPredictionMultiplier = 2.1,  -- Multiplicador para travar no dash
+    SmoothLerpFactor = 0.45,         -- Suavização do movimento
+    
+    WallCheck = false                -- Se true, ignora alvos atrás de paredes
+}
+
+-- ESTADOS INTERNOS
+local LockActive = false
+local CurrentTargetPart = nil
+local CurrentTargetModel = nil
+local SmoothedPredictedPos = nil
+
+-- CRIAÇÃO DA INTERFACE (PLAYERGUI)
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local oldGui = playerGui:FindFirstChild("RGBOnlyCamlockUI")
+if oldGui then oldGui:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "RGBOnlyCamlockUI"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+-- BOTÃO ÚNICO RGB (ARRASTÁVEL)
+local rgbBtn = Instance.new("TextButton")
+rgbBtn.Name = "RGBToggleBtn"
+rgbBtn.Size = UDim2.new(0, 140, 0, 42)
+rgbBtn.Position = UDim2.new(0.85, -50, 0.2, 0)
+rgbBtn.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
+rgbBtn.Text = "CAMLOCK: OFF"
+rgbBtn.TextColor3 = Color3.fromRGB(255, 75, 75)
+rgbBtn.Font = Enum.Font.SourceSansBold
+rgbBtn.TextSize = 13
+rgbBtn.Active = true
+rgbBtn.Draggable = true -- Permite mover o botão para qualquer lugar da tela
+rgbBtn.Parent = screenGui
+
+local rgbCorner = Instance.new("UICorner")
+rgbCorner.CornerRadius = UDim.new(0, 10)
+rgbCorner.Parent = rgbBtn
+
+local rgbStroke = Instance.new("UIStroke")
+rgbStroke.Thickness = 3
+rgbStroke.Parent = rgbBtn
+
+-- ANIMAÇÃO DE CORES RGB (RAINBOW)
+task.spawn(function()
+    local hue = 0
+    while true do
+        hue = (hue + 0.006) % 1
+        local rgbColor = Color3.fromHSV(hue, 0.85, 1)
+        rgbStroke.Color = rgbColor
+        task.wait(0.03)
+    end
+end)
+
+-- VERIFICAÇÃO DE PAREDE
+local function hasLineOfSight(targetPart, targetModel)
+    if not CONFIG.WallCheck then return true end
+    
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character, targetModel}
+
+    local origin = Camera.CFrame.Position
+    local direction = (targetPart.Position - origin)
+    local result = workspace:Raycast(origin, direction, rayParams)
+
+    return result == nil
+end
+
+-- BUSCAR O ALVO MAIS PRÓXIMO DO CENTRO DA TELA
+local function getClosestTarget()
+    local myChar = LocalPlayer.Character
+    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return nil, nil end
+
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local bestPart, bestModel = nil, nil
+    local shortestScreenDist = math.huge
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj ~= myChar then
+            local hum = obj:FindFirstChildOfClass("Humanoid")
+            local targetPart = obj:FindFirstChild(CONFIG.TargetPart) or obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Head") or obj:FindFirstChild("Torso")
+
+            if hum and hum.Health > 0 and targetPart then
+                local worldDist = (targetPart.Position - myChar.HumanoidRootPart.Position).Magnitude
+
+                if worldDist <= CONFIG.MaxDistance then
+                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+
+                    if onScreen then
+                        local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                        if screenDist < shortestScreenDist and hasLineOfSight(targetPart, obj) then
+                            shortestScreenDist = screenDist
+                            bestPart = targetPart
+                            bestModel = obj
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestPart, bestModel
+end
+
+-- FUNÇÃO DESLIGAR CAMLOCK
+local function disableCamlock()
+    LockActive = false
+    CurrentTargetPart = nil
+    CurrentTargetModel = nil
+    SmoothedPredictedPos = nil
+
+    rgbBtn.Text = "CAMLOCK: OFF"
+    rgbBtn.TextColor3 = Color3.fromRGB(255, 75, 75)
+end
+
+-- FUNÇÃO TOGGLE DO CAMLOCK
+local function toggleCamlock()
+    if LockActive then
+        disableCamlock()
+    else
+        local part, model = getClosestTarget()
+        if part and model then
+            CurrentTargetPart = part
+            CurrentTargetModel = model
+            LockActive = true
+            SmoothedPredictedPos = part.Position
+
+            rgbBtn.Text = "LOCKED: " .. model.Name:upper()
+            rgbBtn.TextColor3 = Color3.fromRGB(0, 255, 150)
+        else
+            rgbBtn.Text = "SEM ALVO"
+            task.delay(1, function()
+                if not LockActive then rgbBtn.Text = "CAMLOCK: OFF" end
+            end)
+        end
+    end
+end
+
+-- CLIQUE NO BOTÃO RGB OU TECLA Q
+rgbBtn.MouseButton1Click:Connect(toggleCamlock)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.Q then
+        toggleCamlock()
+    end
+end)
+
+-- LOOP PRINCIPAL DE CÂMERA E ANTI-SIDE DASH
+RunService:BindToRenderStep("RGBCamlockProcess", Enum.RenderPriority.Camera.Value + 1, function()
+    if not LockActive or not CurrentTargetPart or not CurrentTargetModel then return end
+
+    local myChar = LocalPlayer.Character
+    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+
+    local hum = CurrentTargetModel:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then
+        disableCamlock()
+        return
+    end
+
+    local targetVelocity = CurrentTargetPart.AssemblyLinearVelocity
+    local currentPred = CONFIG.BasePrediction
+
+    -- CÁLCULO VETORIAL AUTOMÁTICO DO ANTI-SIDE DASH
+    local rightVector = Camera.CFrame.RightVector
+    local lateralSpeed = math.abs(targetVelocity:Dot(rightVector))
+
+    if lateralSpeed > CONFIG.DashSensitivityThreshold then
+        currentPred = CONFIG.BasePrediction * CONFIG.DashPredictionMultiplier
+    end
+
+    local rawPredictedPos = CurrentTargetPart.Position + (targetVelocity * currentPred)
+
+    if not SmoothedPredictedPos then
+        SmoothedPredictedPos = rawPredictedPos
+    else
+        SmoothedPredictedPos = SmoothedPredictedPos:Lerp(rawPredictedPos, CONFIG.SmoothLerpFactor)
+    end
+
+    Camera.CFrame = CFrame.new(Camera.CFrame.Position, SmoothedPredictedPos)
+end)
